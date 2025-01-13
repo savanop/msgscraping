@@ -13,6 +13,8 @@ import json
 import re
 from collections import defaultdict
 import sys
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 
 # Configure logging with more detailed format and UTF-8 encoding
 logging.basicConfig(
@@ -26,13 +28,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Telegram API credentials
-API_ID = ''  
-API_HASH = ''
-BOT_TOKEN = 'k'
+API_ID = 'telegram api id'  
+API_HASH = 'api hash  4'
+BOT_TOKEN = 'bot ka token'
 
 # Group configurations
-SOURCE_GROUP = '@savangroup1'  # Source telegram link username
-DESTINATION_GROUP = '2'
+SOURCE_GROUP = '@se  target group usernmae'  # Source telegram link username
+DESTINATION_GROUP = 'output group'
 
 # Advanced configurations
 MAX_RETRIES = 3
@@ -43,8 +45,12 @@ STATS_UPDATE_INTERVAL = 1800  # 30 minutes
 MESSAGE_FILTER_WORDS = []  # Add words to filter out
 BACKUP_INTERVAL = 3600 * 24  # 24 hours
 
-# Initialize client with user session
+# Initialize thread pool
+thread_pool = ThreadPoolExecutor(max_workers=4)
+
+# Initialize clients
 client = TelegramClient('user_session', API_ID, API_HASH)
+bot = TelegramClient('bot_session', API_ID, API_HASH)
 
 # Enhanced statistics tracking
 message_counter = 0
@@ -57,7 +63,9 @@ user_engagement = defaultdict(lambda: {'messages': 0, 'media': 0, 'reactions': 0
 
 async def login():
     """Handle user authentication"""
+    global client, bot
     try:
+        # Initialize clients only when needed
         if not client.is_connected():
             await client.connect()
             
@@ -69,6 +77,8 @@ async def login():
                 await client.sign_in(phone, input('Enter the code you received: '))
             except:
                 await client.sign_in(password=input('Enter your 2FA password: '))
+                
+        await bot.start(bot_token=BOT_TOKEN)
                 
         logger.info("Successfully logged in!")
         return True
@@ -123,16 +133,20 @@ async def download_media(message, download_path="downloads"):
     try:
         if not os.path.exists(download_path):
             os.makedirs(download_path)
-            
+
+        # Set a shorter timeout for downloads
         progress_callback = lambda current, total: logger.debug(f"Downloaded: {current}/{total} bytes")
         
         for attempt in range(MAX_RETRIES):
             try:
+                # Download media with await
                 file_path = await message.download_media(
                     download_path,
                     progress_callback=progress_callback
                 )
-                return file_path
+                if file_path:
+                    return file_path
+                raise Exception("Download failed")
             except Exception as e:
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_DELAY)
@@ -236,6 +250,15 @@ async def forward_message(message, destination):
         if message.forward:
             header += f"↪️ Forwarded from: {message.forward.sender.first_name if message.forward.sender else 'Unknown'}\n"
         header += f"📝 Message Type: {msg_type}\n\n"
+
+        # Handle polls
+        if message.poll:
+            poll = message.poll
+            poll_text = f"{header}📊 Poll: {poll.question}\n\nOptions:\n"
+            for option in poll.options:
+                poll_text += f"- {option.text}\n"
+            await bot.send_message(destination, poll_text)
+            return True
         
         # Handle media messages with enhanced features
         if message.media and not isinstance(message.media, MessageMediaWebPage):
@@ -257,14 +280,25 @@ async def forward_message(message, destination):
                 caption += f"\n\n📊 File Info:\n"
                 caption += f"📦 Size: {file_size/1024/1024:.2f} MB\n"
                 caption += f"🏷 Type: {mime_type}\n"
-                
-                await client.send_file(
-                    destination,
-                    file_path,
-                    caption=caption,
-                    reply_to=message.reply_to_msg_id if message.reply_to_msg_id else None,
-                    supports_streaming=True if 'video' in mime_type else None
-                )
+
+                # Always send videos as videos, not as documents
+                if 'video' in mime_type:
+                    await bot.send_file(
+                        destination,
+                        file_path,
+                        caption=caption,
+                        reply_to=message.reply_to_msg_id if message.reply_to_msg_id else None,
+                        supports_streaming=True,
+                        force_document=False  # Always send as video
+                    )
+                else:
+                    await bot.send_file(
+                        destination,
+                        file_path,
+                        caption=caption,
+                        reply_to=message.reply_to_msg_id if message.reply_to_msg_id else None,
+                        supports_streaming=True if 'video' in mime_type else None
+                    )
                 
                 os.remove(file_path)
                 logger.info(f"Successfully forwarded {msg_type} with media from {sender_info['name']}")
@@ -287,7 +321,7 @@ async def forward_message(message, destination):
             else:
                 text += "Empty message"
                 
-            await client.send_message(
+            await bot.send_message(
                 destination,
                 text,
                 reply_to=message.reply_to_msg_id if message.reply_to_msg_id else None,
@@ -338,8 +372,8 @@ async def handle_new_message(event):
 
 async def status_monitor():
     """Enhanced status monitoring with detailed statistics"""
-    while True:
-        try:
+    try:
+        while True:
             # Get top 5 most active users
             top_users = sorted(user_message_counts.items(), key=lambda x: x[1], reverse=True)[:5]
             top_users_text = "\n".join([f"👤 User {uid}: {count} messages" for uid, count in top_users])
@@ -367,7 +401,7 @@ async def status_monitor():
                 f"🏆 Top 5 Active Users:\n{top_users_text}"
             )
             
-            await client.send_message(DESTINATION_GROUP, status)
+            await bot.send_message(DESTINATION_GROUP, status)
             
             # Backup statistics to JSON
             if message_counter % 100 == 0:  # Backup every 100 messages
@@ -375,9 +409,8 @@ async def status_monitor():
                 
             await asyncio.sleep(STATS_UPDATE_INTERVAL)
             
-        except Exception as e:
-            logger.error(f"Status monitor error: {str(e)}")
-            await asyncio.sleep(300)
+    except Exception as e:
+        logger.error(f"Status monitor error: {str(e)}")
 
 async def backup_statistics():
     """Backup statistics to JSON file"""
@@ -408,17 +441,7 @@ async def main():
             logger.error("Failed to resolve source group")
             return
             
-        # Start client
-        await client.start()
-        logger.info("User client started successfully!")
-        
-        # Load backed up statistics if available
-        if os.path.exists('bot_stats_backup.json'):
-            with open('bot_stats_backup.json', 'r', encoding='utf-8') as f:
-                stats = json.load(f)
-                globals().update(stats)
-        
-        # Start monitoring tasks
+        # Start status monitor in a separate task
         asyncio.create_task(status_monitor())
         
         # Run until disconnected
@@ -430,6 +453,10 @@ async def main():
     finally:
         # Backup statistics before exit
         await backup_statistics()
+        if client:
+            await client.disconnect()
+        if bot:
+            await bot.disconnect()
 
 if __name__ == '__main__':
     # Run the client
