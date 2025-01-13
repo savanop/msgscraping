@@ -26,9 +26,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Telegram API credentials
-API_ID = '22862061'  
-API_HASH = '5209af9bad0be1f663d657ad05ddfce4'
-BOT_TOKEN = '7866801642:AAE_G3sletfutnqUO2MpdH1nXa09SXwi79k'
+API_ID = ''  
+API_HASH = ''
+BOT_TOKEN = 'k'
 
 # Group configurations
 SOURCE_GROUP = '@savangroup1'  # Source telegram link username
