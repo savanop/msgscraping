@@ -32,7 +32,7 @@ BOT_TOKEN = 'k'
 
 # Group configurations
 SOURCE_GROUP = '@savangroup1'  # Source telegram link username
-DESTINATION_GROUP = 'hxhd72'
+DESTINATION_GROUP = '2'
 
 # Advanced configurations
 MAX_RETRIES = 3
